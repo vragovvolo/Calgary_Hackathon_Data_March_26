@@ -31,7 +31,14 @@
 # COMMAND ----------
 
 # MAGIC %pip install petrinex
-# MAGIC dbutils.library.restartPython()
+
+# COMMAND ----------
+
+# Restart Python to pick up the new package (skip on serverless -- it handles this automatically)
+try:
+    dbutils.library.restartPython()
+except Exception:
+    pass
 
 # COMMAND ----------
 
