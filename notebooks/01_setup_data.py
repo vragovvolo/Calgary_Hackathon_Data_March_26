@@ -22,8 +22,11 @@
 # MAGIC
 # MAGIC **Requirements:**
 # MAGIC - Databricks workspace with Unity Catalog enabled
-# MAGIC - A cluster with 2+ workers (Standard_DS4_v2 or larger recommended)
+# MAGIC - **Serverless** compute OR a classic cluster with 2+ workers (Standard_DS4_v2 or larger)
 # MAGIC - Internet access (to download from Petrinex API)
+# MAGIC
+# MAGIC **Compatibility:** Works on both serverless and classic compute. No Python UDFs -- all
+# MAGIC transformations use pure SQL for maximum compatibility.
 
 # COMMAND ----------
 
@@ -146,117 +149,80 @@ print(f"\nNGL volumes: {ngl_count:,} rows")
 
 # COMMAND ----------
 
-import math
-from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType, StringType
-
-MERIDIAN_BASES = {1: 97.4573, 2: 102.0, 3: 106.0, 4: 110.0, 5: 114.0, 6: 118.0}
-
-@F.udf(DoubleType())
-def dls_to_lat(township_str, section_str):
-    try:
-        township = int(township_str) if township_str else None
-        section = int(section_str) if section_str else None
-        if not township:
-            return None
-        lat = 49.0 + (township - 0.5) * (9.656 / 111.32)
-        if section and 1 <= section <= 36:
-            row = (section - 1) // 6
-            lat += (row - 2.5) * (1.609 / 111.32)
-        return round(lat, 6)
-    except Exception:
-        return None
-
-@F.udf(DoubleType())
-def dls_to_lon(township_str, range_str, meridian_str, section_str):
-    try:
-        township = int(township_str) if township_str else None
-        range_num = int(range_str) if range_str else None
-        meridian = int(meridian_str) if meridian_str else None
-        section = int(section_str) if section_str else None
-        if not range_num or not meridian or meridian not in (1, 2, 3, 4, 5, 6):
-            return None
-        lat = 49.0 + ((int(township_str) - 0.5) * (9.656 / 111.32)) if township else 53.0
-        km_per_deg_lon = 111.32 * math.cos(math.radians(lat))
-        base_lon = MERIDIAN_BASES.get(meridian, 110.0)
-        lon = -(base_lon + (range_num - 0.5) * (9.656 / km_per_deg_lon))
-        if section and 1 <= section <= 36:
-            row = (section - 1) // 6
-            col = (section - 1) % 6
-            if row % 2 == 1:
-                col = 5 - col
-            lon -= (col - 2.5) * (1.609 / km_per_deg_lon)
-        return round(lon, 6)
-    except Exception:
-        return None
-
-@F.udf(StringType())
-def assign_region(township_str, range_str, meridian_str):
-    try:
-        twp = int(township_str) if township_str else 50
-        rng = int(range_str) if range_str else 10
-        mer = int(meridian_str) if meridian_str else 5
-    except Exception:
-        return "Central Alberta"
-    if twp >= 70:
-        return "Peace Country"
-    elif twp >= 55 and mer <= 4:
-        return "Athabasca"
-    elif twp >= 55 and mer >= 5:
-        return "West-Central Alberta"
-    elif twp >= 35:
-        return "Central Alberta"
-    elif twp >= 20 and rng >= 15:
-        return "Foothills"
-    else:
-        return "Southeast Alberta"
+# Pure SQL approach -- works on both classic clusters and serverless compute
+# No Python UDFs needed (UDFs can fail on serverless)
 
 # COMMAND ----------
 
-vol_df = spark.table(f"{catalog}.{schema}.volumetrics")
-
-facilities_raw = (
-    vol_df
-    .select(
-        F.col("ReportingFacilityID").alias("facility_id"),
-        F.col("ReportingFacilityName").alias("facility_name"),
-        F.col("ReportingFacilityType").alias("facility_type_code"),
-        F.col("ReportingFacilitySubTypeDesc").alias("facility_subtype"),
-        F.col("OperatorBAID").alias("operator_baid"),
-        F.col("OperatorName").alias("operator_name"),
-        F.col("FacilityTownship").alias("township"),
-        F.col("FacilityRange").alias("range"),
-        F.col("FacilityMeridian").alias("meridian"),
-        F.col("FacilitySection").alias("section"),
-        F.col("FacilityLegalSubdivision").alias("lsd"),
-        F.col("ReportingFacilityLocation").alias("dls_location"),
-    )
-    .dropDuplicates(["facility_id"])
+spark.sql(f"""
+CREATE OR REPLACE TABLE {catalog}.{schema}.facilities AS
+WITH raw AS (
+    SELECT
+        ReportingFacilityID as facility_id,
+        FIRST(ReportingFacilityName) as facility_name,
+        FIRST(ReportingFacilityType) as facility_type_code,
+        FIRST(ReportingFacilitySubTypeDesc) as facility_subtype,
+        FIRST(OperatorBAID) as operator_baid,
+        FIRST(OperatorName) as operator_name,
+        FIRST(FacilityTownship) as township,
+        FIRST(FacilityRange) as range_num,
+        FIRST(FacilityMeridian) as meridian,
+        FIRST(FacilitySection) as section,
+        FIRST(FacilityLegalSubdivision) as lsd,
+        FIRST(ReportingFacilityLocation) as dls_location
+    FROM {catalog}.{schema}.volumetrics
+    GROUP BY ReportingFacilityID
+),
+with_coords AS (
+    SELECT *,
+        -- Latitude: 49.0 + (township - 0.5) * 0.08674 + section row offset
+        ROUND(49.0
+            + (CAST(township AS INT) - 0.5) * 0.08674
+            + (FLOOR((CAST(section AS INT) - 1) / 6) - 2.5) * 0.01445,
+        6) as latitude,
+        -- Longitude: -(meridian_base + (range - 0.5) * range_width)
+        -- meridian_base: W4=110, W5=114, W6=118
+        -- range_width depends on latitude (~0.14 degrees at 53N)
+        ROUND(-(
+            CASE CAST(meridian AS INT)
+                WHEN 1 THEN 97.4573 WHEN 2 THEN 102.0 WHEN 3 THEN 106.0
+                WHEN 4 THEN 110.0 WHEN 5 THEN 114.0 WHEN 6 THEN 118.0
+                ELSE 110.0
+            END
+            + (CAST(range_num AS INT) - 0.5) * (9.656 / (111.32 * COS(RADIANS(
+                49.0 + (CAST(township AS INT) - 0.5) * 0.08674
+            ))))
+        ), 6) as longitude,
+        -- Region assignment
+        CASE
+            WHEN CAST(township AS INT) >= 70 THEN 'Peace Country'
+            WHEN CAST(township AS INT) >= 55 AND CAST(meridian AS INT) <= 4 THEN 'Athabasca'
+            WHEN CAST(township AS INT) >= 55 AND CAST(meridian AS INT) >= 5 THEN 'West-Central Alberta'
+            WHEN CAST(township AS INT) >= 35 THEN 'Central Alberta'
+            WHEN CAST(township AS INT) >= 20 AND CAST(range_num AS INT) >= 15 THEN 'Foothills'
+            ELSE 'Southeast Alberta'
+        END as region,
+        -- Facility type mapping
+        CASE facility_type_code
+            WHEN 'BT' THEN 'Battery' WHEN 'GP' THEN 'Gas Plant'
+            WHEN 'GS' THEN 'Gas Gathering System' WHEN 'IF' THEN 'Injection Facility'
+            WHEN 'CT' THEN 'Custom Treating' WHEN 'ST' THEN 'Satellite'
+            WHEN 'MS' THEN 'Meter Station' WHEN 'IN' THEN 'Injection'
+            WHEN 'DS' THEN 'Disposal' WHEN 'MU' THEN 'Multi-Well'
+            WHEN 'WL' THEN 'Well' WHEN 'PL' THEN 'Pipeline'
+            WHEN 'TC' THEN 'Terminal/Tank Farm' WHEN 'CS' THEN 'Compressor Station'
+            WHEN 'FL' THEN 'Flare Stack'
+            ELSE 'Other'
+        END as facility_type
+    FROM raw
+    WHERE township IS NOT NULL AND range_num IS NOT NULL AND meridian IS NOT NULL
 )
+SELECT * FROM with_coords
+WHERE latitude BETWEEN 48.5 AND 60.5
+AND longitude BETWEEN -121.0 AND -109.0
+""")
 
-# Facility type mapping
-facility_type_map = {
-    "BT": "Battery", "GP": "Gas Plant", "GS": "Gas Gathering System",
-    "IF": "Injection Facility", "CT": "Custom Treating", "ST": "Satellite",
-    "MS": "Meter Station", "IN": "Injection", "DS": "Disposal",
-    "MU": "Multi-Well", "WL": "Well", "PL": "Pipeline",
-    "TC": "Terminal/Tank Farm", "CS": "Compressor Station", "FL": "Flare Stack",
-}
-type_map_expr = F.create_map([F.lit(x) for kv in facility_type_map.items() for x in kv])
-
-facilities_df = (
-    facilities_raw
-    .withColumn("latitude", dls_to_lat("township", "section"))
-    .withColumn("longitude", dls_to_lon("township", "range", "meridian", "section"))
-    .withColumn("region", assign_region("township", "range", "meridian"))
-    .withColumn("facility_type", F.coalesce(type_map_expr[F.col("facility_type_code")], F.lit("Other")))
-    .filter(F.col("latitude").isNotNull() & F.col("longitude").isNotNull())
-    .filter(F.col("latitude").between(48.5, 60.5))
-    .filter(F.col("longitude").between(-121.0, -109.0))
-)
-
-facilities_df.write.mode("overwrite").saveAsTable(f"{catalog}.{schema}.facilities")
-print(f"Facilities: {facilities_df.count():,} rows")
+print(f"Facilities: {spark.table(f'{catalog}.{schema}.facilities').count():,} rows")
 
 # COMMAND ----------
 
@@ -500,14 +466,6 @@ print(f"Market prices: {prices_df.count()} months")
 # COMMAND ----------
 
 import requests
-import io
-
-w = None
-try:
-    from databricks.sdk import WorkspaceClient
-    w = WorkspaceClient()
-except Exception:
-    pass
 
 pdfs = [
     ("https://www.petrinex.ca/PD/Documents/PD_Conventional_Volumetrics_Report.pdf", "Petrinex_Volumetrics_Guide.pdf"),
@@ -525,11 +483,9 @@ for url, filename in pdfs:
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
         path = f"{volume_path}/{filename}"
-        if w:
-            w.files.upload(path, io.BytesIO(resp.content), overwrite=True)
-        else:
-            with open(path, "wb") as f:
-                f.write(resp.content)
+        # Write directly to the volume path (works on both classic and serverless)
+        with open(path, "wb") as f:
+            f.write(resp.content)
         downloaded += 1
         print(f"  OK: {filename} ({len(resp.content)//1024} KB)")
     except Exception as e:
