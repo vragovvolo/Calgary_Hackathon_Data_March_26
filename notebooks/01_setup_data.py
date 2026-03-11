@@ -9,8 +9,8 @@
 # MAGIC **What it creates:**
 # MAGIC | Table | Source | Description |
 # MAGIC |-------|--------|-------------|
-# MAGIC | `volumetrics` | Petrinex Vol API | Facility-level production volumes (2024-2025) |
-# MAGIC | `ngl_volumes` | Petrinex NGL API | Well-level NGL production (2024-2025) |
+# MAGIC | `volumetrics` | Petrinex Vol API | Facility-level production volumes (recent months) |
+# MAGIC | `ngl_volumes` | Petrinex NGL API | Well-level NGL production (recent months) |
 # MAGIC | `facilities` | Derived from volumetrics | ~30K facilities with lat/lon coordinates |
 # MAGIC | `operators` | Derived from volumetrics | ~600 operators with real production stats |
 # MAGIC | `wells` | Derived from NGL data | ~126K wells with formation and field names |
@@ -18,7 +18,7 @@
 # MAGIC | `facility_emissions` | Derived from volumetrics | ~760K rows of flaring/venting/fuel data |
 # MAGIC | `market_prices` | Public benchmarks | 14 months of WTI, WCS, AECO prices |
 # MAGIC
-# MAGIC **Runtime:** ~15-20 minutes (downloads Petrinex data from 2024 to present)
+# MAGIC **Runtime:** ~10 minutes (downloads only recently updated Petrinex files)
 # MAGIC
 # MAGIC **Requirements:**
 # MAGIC - Databricks workspace with Unity Catalog enabled
@@ -104,26 +104,22 @@ print(f"Volumes: {catalog}.{schema}.dataset, {catalog}.{schema}.documentation")
 
 from petrinex import PetrinexClient
 
-# Pull recent volumetrics data and filter to 2024+ production months
-print("Pulling volumetrics data (2024 onward)...")
-print("This may take 10-15 minutes.\n")
+from datetime import datetime, timedelta
+
+# Use updated_after to only download recently updated files (fast - typically 3-6 files)
+lookback = (datetime.now() - timedelta(days=120)).strftime("%Y-%m-%d")
+
+print(f"Pulling volumetrics updated after {lookback}...")
+print("This downloads only recently updated files (~5 minutes).\n")
 
 vol_client = PetrinexClient(spark=spark, data_type="Vol")
 vol_df = vol_client.read_spark_df(
-    from_date="2024-01-01",
-    uc_table=f"{catalog}.{schema}.volumetrics_raw"
+    updated_after=lookback,
+    uc_table=f"{catalog}.{schema}.volumetrics"
 )
 
-# Filter to 2024+ production months only (the API may include older amended data)
-spark.sql(f"""
-    CREATE OR REPLACE TABLE {catalog}.{schema}.volumetrics AS
-    SELECT * FROM {catalog}.{schema}.volumetrics_raw
-    WHERE ProductionMonth >= '2024-01'
-""")
-spark.sql(f"DROP TABLE IF EXISTS {catalog}.{schema}.volumetrics_raw")
-
 vol_count = spark.table(f"{catalog}.{schema}.volumetrics").count()
-print(f"\nVolumetrics: {vol_count:,} rows (2024+ only)")
+print(f"\nVolumetrics: {vol_count:,} rows")
 
 # COMMAND ----------
 
@@ -135,25 +131,17 @@ print(f"\nVolumetrics: {vol_count:,} rows (2024+ only)")
 
 # COMMAND ----------
 
-print("Pulling NGL data (2024 onward)...")
-print("This may take 5-10 minutes.\n")
+print(f"Pulling NGL data updated after {lookback}...")
+print("This downloads only recently updated files (~3 minutes).\n")
 
 ngl_client = PetrinexClient(spark=spark, data_type="NGL")
 ngl_df = ngl_client.read_spark_df(
-    from_date="2024-01-01",
-    uc_table=f"{catalog}.{schema}.ngl_volumes_raw"
+    updated_after=lookback,
+    uc_table=f"{catalog}.{schema}.ngl_volumes"
 )
 
-# Filter to 2024+ production months only
-spark.sql(f"""
-    CREATE OR REPLACE TABLE {catalog}.{schema}.ngl_volumes AS
-    SELECT * FROM {catalog}.{schema}.ngl_volumes_raw
-    WHERE ProductionMonth >= '2024-01'
-""")
-spark.sql(f"DROP TABLE IF EXISTS {catalog}.{schema}.ngl_volumes_raw")
-
 ngl_count = spark.table(f"{catalog}.{schema}.ngl_volumes").count()
-print(f"\nNGL volumes: {ngl_count:,} rows (2024+ only)")
+print(f"\nNGL volumes: {ngl_count:,} rows")
 
 # COMMAND ----------
 
