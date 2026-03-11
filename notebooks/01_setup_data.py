@@ -18,7 +18,7 @@
 # MAGIC | `facility_emissions` | Derived from volumetrics | ~760K rows of flaring/venting/fuel data |
 # MAGIC | `market_prices` | Public benchmarks | 14 months of WTI, WCS, AECO prices |
 # MAGIC
-# MAGIC **Runtime:** ~15-20 minutes (downloads 2 years of Petrinex data: 2024-2025)
+# MAGIC **Runtime:** ~15-20 minutes (downloads Petrinex data from 2024 to present)
 # MAGIC
 # MAGIC **Requirements:**
 # MAGIC - Databricks workspace with Unity Catalog enabled
@@ -105,13 +105,12 @@ print(f"Volumes: {catalog}.{schema}.dataset, {catalog}.{schema}.documentation")
 from petrinex import PetrinexClient
 
 # Pull 2024-2025 production data (2 years)
-print("Pulling volumetrics data for 2024-01 to 2025-12...")
+print("Pulling volumetrics data for 2024 onward...")
 print("This may take 10-15 minutes.\n")
 
 vol_client = PetrinexClient(spark=spark, data_type="Vol")
 vol_df = vol_client.read_spark_df(
     from_date="2024-01-01",
-    end_date="2025-12-31",
     uc_table=f"{catalog}.{schema}.volumetrics"
 )
 
@@ -128,13 +127,12 @@ print(f"\nVolumetrics: {vol_count:,} rows")
 
 # COMMAND ----------
 
-print("Pulling NGL data for 2024-01 to 2025-12...")
+print("Pulling NGL data for 2024 onward...")
 print("This may take 5-10 minutes.\n")
 
 ngl_client = PetrinexClient(spark=spark, data_type="NGL")
 ngl_df = ngl_client.read_spark_df(
     from_date="2024-01-01",
-    end_date="2025-12-31",
     uc_table=f"{catalog}.{schema}.ngl_volumes"
 )
 
