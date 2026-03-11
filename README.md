@@ -22,13 +22,13 @@ That's it. All 8 tables + PDFs will be created in your Unity Catalog.
 
 | Table | Rows | Source | Description |
 |-------|------|--------|-------------|
-| **volumetrics** | ~54M | Petrinex Vol API | Facility-level monthly production volumes. Every barrel of oil, MCF of gas, and m3 of water produced, flared, vented, injected, or consumed as fuel at every facility in Alberta. |
-| **ngl_volumes** | ~5M | Petrinex NGL API | Well-level monthly production. Gas, oil, condensate, water, plus NGL components (ethane, propane, butane, pentane) per well. |
+| **volumetrics** | ~27M | Pre-downloaded (2024-2025) | Facility-level monthly production volumes. Every barrel of oil, MCF of gas, and m3 of water produced, flared, vented, injected, or consumed as fuel at every facility in Alberta. |
+| **ngl_volumes** | ~2.5M | Pre-downloaded (2024-2025) | Well-level monthly production. Gas, oil, condensate, water, plus NGL components (ethane, propane, butane, pentane) per well. |
 | **facilities** | ~30K | Derived | Unique facilities with lat/lon coordinates (converted from DLS), type, operator, region. Ready for mapping. |
 | **operators** | ~600 | Derived | Real operator profiles aggregated from production data: facility count, total oil/gas/condensate/water, active months. |
-| **wells** | ~126K | Derived | Per-well summary: production totals, geological formation (Montney, Mannville, Cardium, etc.), field name (PEMBINA, KAYBOB, etc.), operator, facility linkage. |
+| **wells** | ~100K | Derived | Per-well summary: production totals, geological formation (Montney, Mannville, Cardium, etc.), field name (PEMBINA, KAYBOB, etc.), operator, facility linkage. |
 | **field_codes** | 80 | AER Reference | Maps numeric AER field codes to names (e.g., 0877 → PEMBINA). |
-| **facility_emissions** | ~760K | Derived | Real Petrinex-reported flaring, venting, and fuel gas volumes per facility per month. |
+| **facility_emissions** | ~400K | Derived | Real Petrinex-reported flaring, venting, and fuel gas volumes per facility per month. |
 | **market_prices** | 14 | Public benchmarks | Monthly WTI, WCS, AECO, USD/CAD (Jan 2025 -- Feb 2026). |
 
 ### PDFs (for Knowledge Assistants)
@@ -48,13 +48,19 @@ Downloaded to `/Volumes/{catalog}/{schema}/documentation/`:
 ## Data Model
 
 ```
-volumetrics (54M)          ngl_volumes (5M)
+data/
+├── volumetrics/     (24 ZIP files, 181 MB -- Vol 2024-01 to 2025-12)
+└── ngl_volumes/     (24 ZIP files, 78 MB -- NGL 2024-01 to 2025-12)
+
+        ↓ notebook loads into ↓
+
+volumetrics (27M)          ngl_volumes (2.5M)
      |                          |
-     +---> facilities (30K)     +---> wells (126K)
+     +---> facilities (30K)     +---> wells (100K)
      |         |                       |
      +---> operators (600)             +---> field_codes (80)
      |
-     +---> facility_emissions (760K)
+     +---> facility_emissions (400K)
 
 market_prices (14) -- standalone reference
 ```
@@ -83,13 +89,13 @@ market_prices (14) -- standalone reference
 ### Activity IDs (in volumetrics)
 | Code | Activity | Records |
 |---|---|---|
-| `PROD` | Production | 24M |
-| `DISP` | Disposition (sent out) | 4.8M |
-| `REC` | Received | 3.4M |
-| `FUEL` | Fuel gas consumed | 2.9M |
-| `VENT` | Vented gas | 2.9M |
-| `INJ` | Injection | 1.1M |
-| `FLARE` | Flared gas | 307K |
+| `PROD` | Production | ~12M |
+| `DISP` | Disposition (sent out) | ~2.4M |
+| `REC` | Received | ~1.7M |
+| `FUEL` | Fuel gas consumed | ~1.5M |
+| `VENT` | Vented gas | ~1.4M |
+| `INJ` | Injection | ~550K |
+| `FLARE` | Flared gas | ~150K |
 
 **Important:** When aggregating total production, filter to `ActivityID = 'PROD'` to avoid double-counting volumes that flow through multiple facilities.
 
@@ -187,6 +193,28 @@ LIMIT 20
 - **Operator Benchmarking** -- Compare operators by production per facility, emissions intensity
 - **Formation Analytics** -- Compare Montney vs Duvernay vs Cardium well performance
 - **Price Correlation** -- Correlate WTI/WCS prices with Alberta production volumes
+
+---
+
+## Repo Structure
+
+```
+Calgary_Hackathon_Data_March_26/
+├── README.md
+├── notebooks/
+│   └── 01_setup_data.py       # Run this -- creates all 8 tables + downloads PDFs
+└── data/
+    ├── volumetrics/            # 24 Petrinex Vol ZIPs (2024-01 to 2025-12, 181 MB)
+    │   ├── Vol_2024-01.zip
+    │   ├── Vol_2024-02.zip
+    │   └── ... (24 files)
+    └── ngl_volumes/            # 24 Petrinex NGL ZIPs (2024-01 to 2025-12, 78 MB)
+        ├── NGL_2024-01.zip
+        ├── NGL_2024-02.zip
+        └── ... (24 files)
+```
+
+The ZIP files contain nested ZIPs with CSVs inside (Petrinex's standard format). The notebook handles the extraction automatically.
 
 ---
 
