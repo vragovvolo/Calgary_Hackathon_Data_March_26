@@ -3,7 +3,7 @@
 # MAGIC # Calgary Hackathon - Data Setup
 # MAGIC
 # MAGIC This notebook loads the Alberta oil & gas dataset from pre-downloaded Petrinex files
-# MAGIC included in this repo. **No API calls or internet access needed.**
+# MAGIC included in this repo. **No API calls needed for production data.**
 # MAGIC
 # MAGIC **What it creates:**
 # MAGIC | Table | Source | Description |
@@ -17,7 +17,7 @@
 # MAGIC | `facility_emissions` | Derived from volumetrics | Flaring/venting/fuel data per facility |
 # MAGIC | `market_prices` | Public benchmarks | 14 months of WTI, WCS, AECO prices |
 # MAGIC
-# MAGIC **Runtime:** ~5 minutes (reads from local files, no downloads)
+# MAGIC **Runtime:** ~5 minutes
 # MAGIC
 # MAGIC **Compatibility:** Works on both serverless and classic compute.
 
@@ -65,71 +65,84 @@ except Exception as e:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## 2. Copy Data Files to Volume
+# MAGIC ## 2. Extract CSVs from Petrinex ZIPs
 # MAGIC
-# MAGIC Copies the pre-downloaded Petrinex ZIP files from the repo to a UC Volume
-# MAGIC so Spark can read them.
+# MAGIC The repo includes pre-downloaded Petrinex ZIP files (nested ZIPs containing CSVs).
+# MAGIC This step extracts the raw CSVs to a UC Volume so Spark can read them directly.
 
 # COMMAND ----------
 
-import os, shutil
+import os, zipfile, io
 
-# Find the repo root (where data/ folder is)
-repo_root = os.path.dirname(os.path.dirname(os.path.abspath(dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get())))
-# On Databricks, workspace files are at /Workspace/...
-ws_base = f"/Workspace{repo_root}"
+# Locate the data directory relative to this notebook
+notebook_path = dbutils.notebook.entry_point.getDbutils().notebook().getContext().notebookPath().get()
+repo_root = "/Workspace" + str(os.path.dirname(os.path.dirname(notebook_path)))
 vol_base = f"/Volumes/{catalog}/{schema}/dataset"
 
-for subdir in ["volumetrics", "ngl_volumes"]:
-    src_dir = os.path.join(ws_base, "data", subdir)
-    dst_dir = os.path.join(vol_base, subdir)
+def extract_petrinex_zips(src_dir, dst_dir):
+    """Extract CSVs from nested Petrinex ZIPs (outer ZIP → inner ZIP → CSV)."""
     os.makedirs(dst_dir, exist_ok=True)
+    if not os.path.exists(src_dir):
+        print(f"  WARNING: {src_dir} not found")
+        return 0
 
-    if os.path.exists(src_dir):
-        files = [f for f in os.listdir(src_dir) if f.endswith('.zip')]
-        for f in files:
-            shutil.copy2(os.path.join(src_dir, f), os.path.join(dst_dir, f))
-        print(f"Copied {len(files)} {subdir} files to {dst_dir}")
-    else:
-        print(f"WARNING: {src_dir} not found. Make sure this repo is imported into the workspace.")
+    count = 0
+    for fname in sorted(os.listdir(src_dir)):
+        if not fname.endswith('.zip'):
+            continue
+        with open(os.path.join(src_dir, fname), 'rb') as f:
+            outer = zipfile.ZipFile(io.BytesIO(f.read()))
+            for inner_name in outer.namelist():
+                inner_data = outer.read(inner_name)
+                if inner_name.endswith('.zip'):
+                    inner = zipfile.ZipFile(io.BytesIO(inner_data))
+                    for csv_name in inner.namelist():
+                        if csv_name.upper().endswith('.CSV'):
+                            csv_path = os.path.join(dst_dir, csv_name)
+                            with open(csv_path, 'wb') as out:
+                                out.write(inner.read(csv_name))
+                            count += 1
+                elif inner_name.upper().endswith('.CSV'):
+                    csv_path = os.path.join(dst_dir, inner_name)
+                    with open(csv_path, 'wb') as out:
+                        out.write(inner_data)
+                    count += 1
+    return count
+
+n_vol = extract_petrinex_zips(
+    os.path.join(repo_root, "data", "volumetrics"),
+    os.path.join(vol_base, "csv_vol")
+)
+print(f"Extracted {n_vol} volumetrics CSVs")
+
+n_ngl = extract_petrinex_zips(
+    os.path.join(repo_root, "data", "ngl_volumes"),
+    os.path.join(vol_base, "csv_ngl")
+)
+print(f"Extracted {n_ngl} NGL CSVs")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 3. Load Volumetrics Data
 # MAGIC
-# MAGIC Reads the Petrinex Vol CSV files (inside ZIPs) into a Delta table.
+# MAGIC Reads all extracted CSVs in one Spark read (parallel, no pandas).
 
 # COMMAND ----------
 
-import zipfile, io
-import pandas as pd
+vol_csv_path = f"/Volumes/{catalog}/{schema}/dataset/csv_vol/"
 
-vol_dir = f"/Volumes/{catalog}/{schema}/dataset/volumetrics"
-vol_files = sorted([f for f in os.listdir(vol_dir) if f.endswith('.zip')])
-print(f"Loading {len(vol_files)} volumetrics files...\n")
+vol_df = (
+    spark.read
+    .option("header", "true")
+    .option("inferSchema", "false")  # Keep as strings, matches Petrinex schema
+    .option("encoding", "latin1")
+    .csv(vol_csv_path)
+)
 
-first = True
-for i, fname in enumerate(vol_files):
-    path = os.path.join(vol_dir, fname)
-    with open(path, 'rb') as f:
-        outer_zip = zipfile.ZipFile(io.BytesIO(f.read()))
-        for inner_name in outer_zip.namelist():
-            inner_data = outer_zip.read(inner_name)
-            if inner_name.endswith('.zip'):
-                inner_zip = zipfile.ZipFile(io.BytesIO(inner_data))
-                for csv_name in inner_zip.namelist():
-                    if csv_name.upper().endswith('.CSV'):
-                        csv_data = inner_zip.read(csv_name)
-                        pdf = pd.read_csv(io.BytesIO(csv_data), dtype=str, encoding='latin1')
-                        sdf = spark.createDataFrame(pdf)
-                        mode = "overwrite" if first else "append"
-                        sdf.write.mode(mode).option("mergeSchema", "true").saveAsTable(f"{catalog}.{schema}.volumetrics")
-                        first = False
-                        print(f"  {i+1}/{len(vol_files)}: {fname} ({len(pdf):,} rows)")
-
+vol_df.write.mode("overwrite").saveAsTable(f"{catalog}.{schema}.volumetrics")
 vol_count = spark.table(f"{catalog}.{schema}.volumetrics").count()
-print(f"\nVolumetrics total: {vol_count:,} rows")
+print(f"Volumetrics: {vol_count:,} rows")
 
 # COMMAND ----------
 
@@ -138,36 +151,26 @@ print(f"\nVolumetrics total: {vol_count:,} rows")
 
 # COMMAND ----------
 
-ngl_dir = f"/Volumes/{catalog}/{schema}/dataset/ngl_volumes"
-ngl_files = sorted([f for f in os.listdir(ngl_dir) if f.endswith('.zip')])
-print(f"Loading {len(ngl_files)} NGL files...\n")
+ngl_csv_path = f"/Volumes/{catalog}/{schema}/dataset/csv_ngl/"
 
-first = True
-for i, fname in enumerate(ngl_files):
-    path = os.path.join(ngl_dir, fname)
-    with open(path, 'rb') as f:
-        outer_zip = zipfile.ZipFile(io.BytesIO(f.read()))
-        for inner_name in outer_zip.namelist():
-            inner_data = outer_zip.read(inner_name)
-            if inner_name.endswith('.zip'):
-                inner_zip = zipfile.ZipFile(io.BytesIO(inner_data))
-                for csv_name in inner_zip.namelist():
-                    if csv_name.upper().endswith('.CSV'):
-                        csv_data = inner_zip.read(csv_name)
-                        pdf = pd.read_csv(io.BytesIO(csv_data), dtype=str, encoding='latin1')
-                        sdf = spark.createDataFrame(pdf)
-                        mode = "overwrite" if first else "append"
-                        sdf.write.mode(mode).option("mergeSchema", "true").saveAsTable(f"{catalog}.{schema}.ngl_volumes")
-                        first = False
-                        print(f"  {i+1}/{len(ngl_files)}: {fname} ({len(pdf):,} rows)")
+ngl_df = (
+    spark.read
+    .option("header", "true")
+    .option("inferSchema", "false")
+    .option("encoding", "latin1")
+    .csv(ngl_csv_path)
+)
 
+ngl_df.write.mode("overwrite").saveAsTable(f"{catalog}.{schema}.ngl_volumes")
 ngl_count = spark.table(f"{catalog}.{schema}.ngl_volumes").count()
-print(f"\nNGL total: {ngl_count:,} rows")
+print(f"NGL volumes: {ngl_count:,} rows")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 5. Build Facilities Table (DLS to Lat/Lon)
+# MAGIC
+# MAGIC Converts Alberta's Dominion Land Survey coordinates to approximate WGS84 lat/lon.
 
 # COMMAND ----------
 
@@ -192,8 +195,10 @@ WITH raw AS (
 ),
 with_coords AS (
     SELECT *,
+        -- Latitude from township + section offset
         ROUND(49.0 + (CAST(township AS INT) - 0.5) * 0.08674
             + (FLOOR((CAST(section AS INT) - 1) / 6) - 2.5) * 0.01445, 6) as latitude,
+        -- Longitude from meridian + range (adjusted for latitude)
         ROUND(-(
             CASE CAST(meridian AS INT)
                 WHEN 4 THEN 110.0 WHEN 5 THEN 114.0 WHEN 6 THEN 118.0
@@ -202,6 +207,7 @@ with_coords AS (
             + (CAST(range_num AS INT) - 0.5) * (9.656 / (111.32 * COS(RADIANS(
                 49.0 + (CAST(township AS INT) - 0.5) * 0.08674))))
         ), 6) as longitude,
+        -- Region assignment
         CASE
             WHEN CAST(township AS INT) >= 70 THEN 'Peace Country'
             WHEN CAST(township AS INT) >= 55 AND CAST(meridian AS INT) <= 4 THEN 'Athabasca'
@@ -210,6 +216,7 @@ with_coords AS (
             WHEN CAST(township AS INT) >= 20 AND CAST(range_num AS INT) >= 15 THEN 'Foothills'
             ELSE 'Southeast Alberta'
         END as region,
+        -- Facility type
         CASE facility_type_code
             WHEN 'BT' THEN 'Battery' WHEN 'GP' THEN 'Gas Plant'
             WHEN 'GS' THEN 'Gas Gathering System' WHEN 'IF' THEN 'Injection Facility'
@@ -234,7 +241,8 @@ print(f"Facilities: {spark.table(f'{catalog}.{schema}.facilities').count():,} ro
 spark.sql(f"""
 CREATE OR REPLACE TABLE {catalog}.{schema}.operators AS
 SELECT
-    OperatorBAID as operator_baid, MAX(OperatorName) as operator_name,
+    OperatorBAID as operator_baid,
+    MAX(OperatorName) as operator_name,
     COUNT(DISTINCT ReportingFacilityID) as facility_count,
     COUNT(DISTINCT ProductionMonth) as active_months,
     SUM(CASE WHEN ProductID LIKE '%OIL%' OR ProductID LIKE '%CRD%' THEN Volume ELSE 0 END) as total_oil_m3,
@@ -242,9 +250,13 @@ SELECT
     SUM(CASE WHEN ProductID LIKE '%CND%' OR ProductID LIKE '%COND%' THEN Volume ELSE 0 END) as total_condensate_m3,
     SUM(CASE WHEN ProductID LIKE '%WTR%' OR ProductID LIKE '%WATER%' THEN Volume ELSE 0 END) as total_water_m3,
     SUM(Hours) as total_hours,
-    MIN(ProductionMonth) as first_production_month, MAX(ProductionMonth) as last_production_month
-FROM {catalog}.{schema}.volumetrics WHERE OperatorBAID IS NOT NULL GROUP BY OperatorBAID
+    MIN(ProductionMonth) as first_production_month,
+    MAX(ProductionMonth) as last_production_month
+FROM {catalog}.{schema}.volumetrics
+WHERE OperatorBAID IS NOT NULL
+GROUP BY OperatorBAID
 """)
+
 print(f"Operators: {spark.table(f'{catalog}.{schema}.operators').count():,} rows")
 
 # COMMAND ----------
@@ -285,12 +297,15 @@ SELECT * FROM VALUES
 ('0336','GILBY'), ('0550','LEDUC-WOODBEND'), ('0891','PEMBINA TRIASSIC')
 AS t(field_code, field_name)
 """)
+
 print(f"Field codes: {spark.table(f'{catalog}.{schema}.field_codes').count()} entries")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 8. Build Wells Table
+# MAGIC
+# MAGIC Per-well summary with geological formation and human-readable field names.
 
 # COMMAND ----------
 
@@ -298,10 +313,15 @@ spark.sql(f"""
 CREATE OR REPLACE TABLE {catalog}.{schema}.wells AS
 SELECT w.*, COALESCE(fc.field_name, w.field_name) as field_display_name
 FROM (
-    SELECT WellID as well_id,
-        MAX(ReportingFacilityID) as facility_id, MAX(ReportingFacilityName) as facility_name,
-        MAX(OperatorBAID) as operator_baid, MAX(OperatorName) as operator_name,
-        MAX(Field) as field_name, MAX(Pool) as pool_name, MAX(Area) as area_name,
+    SELECT
+        WellID as well_id,
+        MAX(ReportingFacilityID) as facility_id,
+        MAX(ReportingFacilityName) as facility_name,
+        MAX(OperatorBAID) as operator_baid,
+        MAX(OperatorName) as operator_name,
+        MAX(Field) as field_name,
+        MAX(Pool) as pool_name,
+        MAX(Area) as area_name,
         MAX(WellLicenseNumber) as well_license,
         COUNT(DISTINCT ProductionMonth) as active_months,
         SUM(CAST(GasProduction AS DECIMAL(12,1))) as total_gas_e3m3,
@@ -320,7 +340,8 @@ FROM (
         SUM(CAST(PentaneSpecVolume AS DECIMAL(12,1))) as total_pentane_spec_m3,
         SUM(CAST(LiteMixVolume AS DECIMAL(12,1))) as total_lite_mix_m3,
         SUM(CAST(Hours AS INT)) as total_hours,
-        MIN(ProductionMonth) as first_production_month, MAX(ProductionMonth) as last_production_month,
+        MIN(ProductionMonth) as first_production_month,
+        MAX(ProductionMonth) as last_production_month,
         CASE SUBSTRING(MAX(Pool), 1, 4)
             WHEN '0950' THEN 'Montney' WHEN '0800' THEN 'Mannville'
             WHEN '0952' THEN 'Spirit River' WHEN '0951' THEN 'Cardium'
@@ -336,23 +357,31 @@ FROM (
             WHEN '0251' THEN 'Wabamun' WHEN '0720' THEN 'Nordegg'
             WHEN '0999' THEN 'Miscellaneous' ELSE 'Other'
         END as formation
-    FROM {catalog}.{schema}.ngl_volumes WHERE WellID IS NOT NULL GROUP BY WellID
-) w LEFT JOIN {catalog}.{schema}.field_codes fc ON w.field_name = fc.field_code
+    FROM {catalog}.{schema}.ngl_volumes
+    WHERE WellID IS NOT NULL
+    GROUP BY WellID
+) w
+LEFT JOIN {catalog}.{schema}.field_codes fc ON w.field_name = fc.field_code
 """)
+
 print(f"Wells: {spark.table(f'{catalog}.{schema}.wells').count():,} rows")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 9. Create Facility Emissions Table
+# MAGIC
+# MAGIC Real Petrinex-reported flaring, venting, and fuel gas volumes.
 
 # COMMAND ----------
 
 spark.sql(f"""
 CREATE OR REPLACE TABLE {catalog}.{schema}.facility_emissions AS
 SELECT
-    ReportingFacilityID as facility_id, MAX(ReportingFacilityName) as facility_name,
-    MAX(OperatorBAID) as operator_baid, MAX(OperatorName) as operator_name,
+    ReportingFacilityID as facility_id,
+    MAX(ReportingFacilityName) as facility_name,
+    MAX(OperatorBAID) as operator_baid,
+    MAX(OperatorName) as operator_name,
     ProductionMonth as production_month,
     SUM(CASE WHEN ActivityID = 'FLARE' THEN Volume ELSE 0 END) as flare_volume,
     SUM(CASE WHEN ActivityID = 'VENT' THEN Volume ELSE 0 END) as vent_volume,
@@ -363,12 +392,15 @@ FROM {catalog}.{schema}.volumetrics
 WHERE ActivityID IN ('FLARE','VENT','FUEL','PROD')
 GROUP BY ReportingFacilityID, ProductionMonth
 """)
+
 print(f"Facility emissions: {spark.table(f'{catalog}.{schema}.facility_emissions').count():,} rows")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 10. Create Market Prices Table
+# MAGIC
+# MAGIC Real monthly benchmark prices (WTI, WCS, AECO).
 
 # COMMAND ----------
 
@@ -392,12 +424,16 @@ SELECT * FROM VALUES
 AS t(price_month, wti_usd_bbl, wcs_usd_bbl, wcs_discount_usd, aeco_cad_gj,
      exchange_rate_usd_cad, wti_cad_bbl, wcs_cad_bbl)
 """)
+
 print(f"Market prices: {spark.table(f'{catalog}.{schema}.market_prices').count()} months")
 
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## 11. Download Reference PDFs
+# MAGIC
+# MAGIC Downloads regulatory documents for use with Knowledge Assistants.
+# MAGIC (Only step requiring internet access.)
 
 # COMMAND ----------
 
@@ -425,6 +461,21 @@ for url, filename in pdfs:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## 12. Cleanup temp CSVs
+
+# COMMAND ----------
+
+import shutil
+
+for d in ["csv_vol", "csv_ngl"]:
+    path = f"/Volumes/{catalog}/{schema}/dataset/{d}"
+    if os.path.exists(path):
+        shutil.rmtree(path)
+        print(f"Cleaned up {path}")
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Summary
 
 # COMMAND ----------
@@ -438,5 +489,6 @@ for t in ["volumetrics", "ngl_volumes", "facilities", "operators", "wells",
     count = spark.table(f"{catalog}.{schema}.{t}").count()
     print(f"  {t:25s} {count:>12,} rows")
 
+print(f"\n  PDFs: /Volumes/{catalog}/{schema}/documentation/")
 print(f"\n  All data from Petrinex Public Data (2024-2025). Zero synthetic data.")
 print(f"{'='*60}")
