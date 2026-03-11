@@ -245,11 +245,11 @@ SELECT
     MAX(OperatorName) as operator_name,
     COUNT(DISTINCT ReportingFacilityID) as facility_count,
     COUNT(DISTINCT ProductionMonth) as active_months,
-    SUM(CASE WHEN ProductID LIKE '%OIL%' OR ProductID LIKE '%CRD%' THEN Volume ELSE 0 END) as total_oil_m3,
-    SUM(CASE WHEN ProductID LIKE '%GAS%' THEN Volume ELSE 0 END) as total_gas_e3m3,
-    SUM(CASE WHEN ProductID LIKE '%CND%' OR ProductID LIKE '%COND%' THEN Volume ELSE 0 END) as total_condensate_m3,
-    SUM(CASE WHEN ProductID LIKE '%WTR%' OR ProductID LIKE '%WATER%' THEN Volume ELSE 0 END) as total_water_m3,
-    SUM(Hours) as total_hours,
+    SUM(CASE WHEN ProductID LIKE '%OIL%' OR ProductID LIKE '%CRD%' THEN try_cast(Volume AS DECIMAL(13,3)) ELSE 0 END) as total_oil_m3,
+    SUM(CASE WHEN ProductID LIKE '%GAS%' THEN try_cast(Volume AS DECIMAL(13,3)) ELSE 0 END) as total_gas_e3m3,
+    SUM(CASE WHEN ProductID LIKE '%CND%' OR ProductID LIKE '%COND%' THEN try_cast(Volume AS DECIMAL(13,3)) ELSE 0 END) as total_condensate_m3,
+    SUM(CASE WHEN ProductID LIKE '%WTR%' OR ProductID LIKE '%WATER%' THEN try_cast(Volume AS DECIMAL(13,3)) ELSE 0 END) as total_water_m3,
+    SUM(try_cast(Hours AS INT)) as total_hours,
     MIN(ProductionMonth) as first_production_month,
     MAX(ProductionMonth) as last_production_month
 FROM {catalog}.{schema}.volumetrics
@@ -383,11 +383,11 @@ SELECT
     MAX(OperatorBAID) as operator_baid,
     MAX(OperatorName) as operator_name,
     ProductionMonth as production_month,
-    SUM(CASE WHEN ActivityID = 'FLARE' THEN Volume ELSE 0 END) as flare_volume,
-    SUM(CASE WHEN ActivityID = 'VENT' THEN Volume ELSE 0 END) as vent_volume,
-    SUM(CASE WHEN ActivityID = 'FUEL' THEN Volume ELSE 0 END) as fuel_volume,
-    SUM(CASE WHEN ActivityID IN ('FLARE','VENT','FUEL') THEN Volume ELSE 0 END) as total_emissions_volume,
-    SUM(CASE WHEN ActivityID = 'PROD' THEN Volume ELSE 0 END) as production_volume
+    SUM(CASE WHEN ActivityID = 'FLARE' THEN try_cast(Volume AS DECIMAL(13,3)) ELSE 0 END) as flare_volume,
+    SUM(CASE WHEN ActivityID = 'VENT' THEN try_cast(Volume AS DECIMAL(13,3)) ELSE 0 END) as vent_volume,
+    SUM(CASE WHEN ActivityID = 'FUEL' THEN try_cast(Volume AS DECIMAL(13,3)) ELSE 0 END) as fuel_volume,
+    SUM(CASE WHEN ActivityID IN ('FLARE','VENT','FUEL') THEN try_cast(Volume AS DECIMAL(13,3)) ELSE 0 END) as total_emissions_volume,
+    SUM(CASE WHEN ActivityID = 'PROD' THEN try_cast(Volume AS DECIMAL(13,3)) ELSE 0 END) as production_volume
 FROM {catalog}.{schema}.volumetrics
 WHERE ActivityID IN ('FLARE','VENT','FUEL','PROD')
 GROUP BY ReportingFacilityID, ProductionMonth
