@@ -104,18 +104,26 @@ print(f"Volumes: {catalog}.{schema}.dataset, {catalog}.{schema}.documentation")
 
 from petrinex import PetrinexClient
 
-# Pull 2024-2025 production data (2 years)
-print("Pulling volumetrics data for 2024 onward...")
+# Pull recent volumetrics data and filter to 2024+ production months
+print("Pulling volumetrics data (2024 onward)...")
 print("This may take 10-15 minutes.\n")
 
 vol_client = PetrinexClient(spark=spark, data_type="Vol")
 vol_df = vol_client.read_spark_df(
     from_date="2024-01-01",
-    uc_table=f"{catalog}.{schema}.volumetrics"
+    uc_table=f"{catalog}.{schema}.volumetrics_raw"
 )
 
+# Filter to 2024+ production months only (the API may include older amended data)
+spark.sql(f"""
+    CREATE OR REPLACE TABLE {catalog}.{schema}.volumetrics AS
+    SELECT * FROM {catalog}.{schema}.volumetrics_raw
+    WHERE ProductionMonth >= '2024-01'
+""")
+spark.sql(f"DROP TABLE IF EXISTS {catalog}.{schema}.volumetrics_raw")
+
 vol_count = spark.table(f"{catalog}.{schema}.volumetrics").count()
-print(f"\nVolumetrics: {vol_count:,} rows")
+print(f"\nVolumetrics: {vol_count:,} rows (2024+ only)")
 
 # COMMAND ----------
 
@@ -127,17 +135,25 @@ print(f"\nVolumetrics: {vol_count:,} rows")
 
 # COMMAND ----------
 
-print("Pulling NGL data for 2024 onward...")
+print("Pulling NGL data (2024 onward)...")
 print("This may take 5-10 minutes.\n")
 
 ngl_client = PetrinexClient(spark=spark, data_type="NGL")
 ngl_df = ngl_client.read_spark_df(
     from_date="2024-01-01",
-    uc_table=f"{catalog}.{schema}.ngl_volumes"
+    uc_table=f"{catalog}.{schema}.ngl_volumes_raw"
 )
 
+# Filter to 2024+ production months only
+spark.sql(f"""
+    CREATE OR REPLACE TABLE {catalog}.{schema}.ngl_volumes AS
+    SELECT * FROM {catalog}.{schema}.ngl_volumes_raw
+    WHERE ProductionMonth >= '2024-01'
+""")
+spark.sql(f"DROP TABLE IF EXISTS {catalog}.{schema}.ngl_volumes_raw")
+
 ngl_count = spark.table(f"{catalog}.{schema}.ngl_volumes").count()
-print(f"\nNGL volumes: {ngl_count:,} rows")
+print(f"\nNGL volumes: {ngl_count:,} rows (2024+ only)")
 
 # COMMAND ----------
 
