@@ -11,8 +11,8 @@ Real Alberta oil and gas production data for the Databricks Calgary Hackathon, M
 1. Import this repo into your Databricks workspace
 2. Open `notebooks/01_setup_data`
 3. Set your catalog and schema name in the widgets (defaults: `hackathon` / `energy_data`)
-4. Attach to **serverless** compute or a classic cluster with **2+ workers** (Standard_DS4_v2 or larger)
-5. **Run All** -- takes ~10 minutes
+4. Attach to **serverless** compute or any cluster
+5. **Run All** -- takes ~5 minutes (reads from local files, no API downloads)
 
 That's it. All 8 tables + PDFs will be created in your Unity Catalog.
 
@@ -204,10 +204,10 @@ LIMIT 20
 ## Requirements
 
 - Databricks workspace with **Unity Catalog** enabled
-- **Serverless** compute OR classic cluster with **2+ workers** (Standard_DS4_v2 or larger)
-- **Internet access** from the cluster (to download from Petrinex API and PDF URLs)
-- ~10 minutes runtime
-- Compatible with both serverless and classic compute (no Python UDFs -- pure SQL transformations)
+- **Serverless** compute or any cluster (no special requirements)
+- **Internet access** only needed for PDF downloads (production data is included in the repo)
+- ~5 minutes runtime (reads from local files)
+- Compatible with both serverless and classic compute (pure SQL transformations)
 
 ## License
 
