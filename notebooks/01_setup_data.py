@@ -9,8 +9,8 @@
 # MAGIC **What it creates:**
 # MAGIC | Table | Source | Description |
 # MAGIC |-------|--------|-------------|
-# MAGIC | `volumetrics` | Petrinex Vol API | ~54M rows of facility-level production volumes |
-# MAGIC | `ngl_volumes` | Petrinex NGL API | ~5M rows of well-level NGL production |
+# MAGIC | `volumetrics` | Petrinex Vol API | Facility-level production volumes (2024-2025) |
+# MAGIC | `ngl_volumes` | Petrinex NGL API | Well-level NGL production (2024-2025) |
 # MAGIC | `facilities` | Derived from volumetrics | ~30K facilities with lat/lon coordinates |
 # MAGIC | `operators` | Derived from volumetrics | ~600 operators with real production stats |
 # MAGIC | `wells` | Derived from NGL data | ~126K wells with formation and field names |
@@ -18,7 +18,7 @@
 # MAGIC | `facility_emissions` | Derived from volumetrics | ~760K rows of flaring/venting/fuel data |
 # MAGIC | `market_prices` | Public benchmarks | 14 months of WTI, WCS, AECO prices |
 # MAGIC
-# MAGIC **Runtime:** ~30-40 minutes (most time spent downloading Petrinex data)
+# MAGIC **Runtime:** ~15-20 minutes (downloads 2 years of Petrinex data: 2024-2025)
 # MAGIC
 # MAGIC **Requirements:**
 # MAGIC - Databricks workspace with Unity Catalog enabled
@@ -103,17 +103,15 @@ print(f"Volumes: {catalog}.{schema}.dataset, {catalog}.{schema}.documentation")
 # COMMAND ----------
 
 from petrinex import PetrinexClient
-from datetime import datetime, timedelta
 
-# Pull data updated in the last 60 days (gets several months of production data)
-recent_date = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
-
-print(f"Pulling volumetrics data updated after {recent_date}...")
-print("This may take 15-25 minutes depending on data volume.\n")
+# Pull 2024-2025 production data (2 years)
+print("Pulling volumetrics data for 2024-01 to 2025-12...")
+print("This may take 10-15 minutes.\n")
 
 vol_client = PetrinexClient(spark=spark, data_type="Vol")
 vol_df = vol_client.read_spark_df(
-    updated_after=recent_date,
+    from_date="2024-01-01",
+    end_date="2025-12-31",
     uc_table=f"{catalog}.{schema}.volumetrics"
 )
 
@@ -130,12 +128,13 @@ print(f"\nVolumetrics: {vol_count:,} rows")
 
 # COMMAND ----------
 
-print(f"Pulling NGL data updated after {recent_date}...")
+print("Pulling NGL data for 2024-01 to 2025-12...")
 print("This may take 5-10 minutes.\n")
 
 ngl_client = PetrinexClient(spark=spark, data_type="NGL")
 ngl_df = ngl_client.read_spark_df(
-    updated_after=recent_date,
+    from_date="2024-01-01",
+    end_date="2025-12-31",
     uc_table=f"{catalog}.{schema}.ngl_volumes"
 )
 
